@@ -3,9 +3,7 @@ import getpass
 import json
 import itertools
 
-import boto3
-
-s3res = boto3.resource('s3')
+from boto3.session import Session
 
 from oss.oss_api import *
 from oss import oss_xml_handler
@@ -51,6 +49,12 @@ class HistoryBucket:
         else:
             return ledger
 
+    def takeOverview(self):
+        for component in self.components:
+            stored = set([self.decodeCheckPoint(component, one[0][len(self.prefix)+len('/'):]) for one in self.allPages(component, 1000)])
+            print "missing %s: %s" % (component, list(set(self.ledgerCheckpoints(self.getLCL())).difference(stored)))
+        
+
 # class LocalFolder(HistoryArchive):
 #     @staticmethod 
 #     def parseMatch(uri):
@@ -70,13 +74,42 @@ class S3Folder(HistoryBucket):
         else:
             return S3Folder(bucket, prefix)
 
-#    def getLCL(self): 
-#bucket = s3res.Bucket("pangu.mythology.strllar.org")
-#files = bucket.objects.filter(Prefix="klm")
-# for file in files:
-#     print file
+    def checkCredentials(self):
+        keyid = raw_input('Access Key ID for AWS S3: ')
+        keysecret = getpass.getpass('Access Key Secret for AWS S3: ')
+        sess = Session(aws_access_key_id=keyid,
+                         aws_secret_access_key=keysecret)
+        self.s3 = sess.resource('s3')
+        self.s3bucket = self.s3.Bucket(self.bucket)
+        
+    def getLCL(self):
+        res=self.s3.Object(self.bucket, self.prefix + '/' + self.headflag).get()
+        head = json.loads(res['Body'].read())
+        self.head = head
+        return self.head['currentLedger']
 
-# print("done")
+    def onePage(self, prefix, marker, pagesize):
+        res = None
+        if (marker == None):
+            res = list(self.s3bucket.objects.filter(Prefix=prefix, MaxKeys=pagesize))
+        else:
+            res = list(self.s3bucket.objects.filter(Prefix=prefix, Marker=marker, MaxKeys=pagesize))
+
+        if len(res) < pagesize:
+            return None, res
+        else:
+            return res[-1].key, res
+
+    def allPages(self, subdir, pagesize = 100):
+        marker, page = self.onePage(self.prefix+'/'+subdir, None, pagesize)
+
+        for obj in page:
+            yield (obj.key, int(obj.size))
+        
+        while marker is not None:
+            marker, page = self.onePage(self.prefix+'/'+subdir, marker, pagesize)
+            for obj in page:
+                yield (obj.key, int(obj.size))
 
        
 class OSSFolder(HistoryBucket):
@@ -127,18 +160,13 @@ class OSSFolder(HistoryBucket):
             for obj in page:
                 yield (obj.key, int(obj.size))
 
-    def takeOverview(self):
-        for component in self.components:
-            stored = set([self.decodeCheckPoint(component, one[0][len(self.prefix)+len('/'):]) for one in self.allPages(component, 1000)])
-            print("missing %s: "%component, set(self.ledgerCheckpoints(self.getLCL())).difference(stored))
-        
 def prepareBucket(uri):
     parsed =  [x for x in [OSSFolder.parseMatch(uri), S3Folder.parseMatch(uri)] if x is not None]
     if (len(parsed) > 0):
         folder = parsed[0]
         print "checking %s" % folder
         folder.checkCredentials()
-        print("Lastest Closed Ledger is %d" % folder.getLCL())
+        print("Last Closed Ledger is %d" % folder.getLCL())
         return folder
     else:
         return None
