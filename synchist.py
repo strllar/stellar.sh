@@ -51,8 +51,9 @@ class HistoryBucket:
     def takeOverview(self):
         for component in self.components:
             stored = set([self.decodeCheckPoint(component, one[0][len(self.prefix)+len('/'):]) for one in self.allPages(component, 1000)])
-            print "missing %s: %s" % (component, list(set(self.ledgerCheckpoints(self.getLCL())).difference(stored)))
+            print "missing %s: %s" % (component, sorted(list(set(self.ledgerCheckpoints(self.getLCL())).difference(stored))))
         
+
 
 # class LocalFolder(HistoryArchive):
 #     @staticmethod 
