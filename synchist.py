@@ -1,7 +1,6 @@
 from optparse import OptionParser
 import getpass
 import json
-import itertools
 
 from boto3.session import Session
 
@@ -35,7 +34,7 @@ class HistoryBucket:
         return bucket, path[(len(PRODUCT_PREFIX)+len(bucket)+len('/')):]
 
     def ledgerCheckpoints(self,lcl):
-        return itertools.chain([0], xrange(63, lcl+1, 64))
+        return xrange(63, lcl+1, 64)
 
     def encodeCheckPoint(self, component, ledger):
         hexstr = "%08x" % ledger
