@@ -16,32 +16,46 @@ class HistoryArchive:
     def listEntries(self, component): pass
     def getRawEntry(self, path): pass
 
-    def getEntry(self, component, ledger): pass
-    def localizedEntry(self, component, ledger): pass
-    def putEntry(self, component, ledger): pass
-    def putLocalizedEntry(self, localpath): pass
+    # def localizedEntry(self, component, uniqid): pass
+    # def putEntry(self, component, uniqid): pass
+    # def putLocalizedEntry(self, localpath): pass
 
     def getLCL(self, update=False):
         if (self.head is None or update):
             head = json.loads(self.getRawEntry(self.headflag))
             self.head = head            
         return self.head['currentLedger']
-        
+
+    def resolveComponent(self, component, uniqid):
+        hexstr = uniqid
+        ext = ".xdr.gz"
+        if (component == "history"):
+            ext = ".json"            
+        return "%s/%s/%s/%s/%s-%s%s" % (component, hexstr[0:2], hexstr[2:4], hexstr[4:6], component, hexstr, ext)
+    
     def ledgerCheckpoints(self,lcl):
         return xrange(63, lcl+1, 64)
 
-    def encodeCheckPoint(self, component, ledger):
-        hexstr = "%08x" % ledger
-        return "%s/%s/%s/%s/%s-%s" % (component, hexstr[0:2], hexstr[2:4], hexstr[4:6], component, hexstr)
+    def _encodeCheckPoint(self, component, ledger):
+        return self.resolveComponent(component, "%08x" % ledger)
 
     def decodeCheckPoint(self, component, path):
         #"component/00/00/00/component-0000003f.*" => 63(0x3f)
         ledger = int(path[2*len(component)+11:2*len(component)+19], 16)
-        if not path.startswith(self.encodeCheckPoint(component, ledger)):
-            raise "%s not a %s checkpoint" % (path, component)
-        else:
+        if (path == self._encodeCheckPoint(component, ledger)):
             return ledger
+        else:
+            raise "%s not a %s checkpoint" % (path, component)
 
+    def decodeFlat(self, component, path):
+        #"component/de/ad/be/component-deadbeef....*" => deadbeef...
+        hash = path[2*len(component)+11:-len(".xdr.gz")]
+        if (path == self.resolveComponent(component, hash)):
+            return hash
+        else:
+            raise "%s not a %s path" % (path, component)
+
+        
     def takeOverview(self):
         for component in self.components:
             stored = set([self.decodeCheckPoint(component, one[0]) for one in self.listEntries(component)])
@@ -91,10 +105,12 @@ class S3Folder(HistoryBucket):
             return S3Folder(bucket, prefix)
 
     def checkCredentials(self):
+        region = raw_input('Region for AWS S3: ')
         keyid = raw_input('Access Key ID for AWS S3: ')
         keysecret = getpass.getpass('Access Key Secret for AWS S3: ')
         sess = Session(aws_access_key_id=keyid,
-                         aws_secret_access_key=keysecret)
+                         aws_secret_access_key=keysecret,
+                       region_name=region)
         self.s3 = sess.resource('s3')
         self.s3bucket = self.s3.Bucket(self.bucket)
 
@@ -183,7 +199,20 @@ def prepareBucket(uri):
     else:
         return None
 
+def diffBuckets(src, dest):
+    for component in src.components:
+        srcset = set([src.decodeCheckPoint(component, one[0]) for one in src.listEntries(component)])
+        destset = set([dest.decodeCheckPoint(component, one[0]) for one in dest.listEntries(component)])
+        if (len(set(src.ledgerCheckpoints(dest.getLCL())).difference(srcset.union(destset))) == 0):
+            print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
+        else:
+            raise "even combination of archives is not complete, get a new archive!"
+    for component in src.flat_components:
+        srcset = set([src.decodeFlat(component, one[0]) for one in src.listEntries(component)])
+        destset = set([dest.decodeFlat(component, one[0]) for one in dest.listEntries(component)])
+        print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
 
+    
 if __name__ == "__main__":
     parser = OptionParser()
     (options, args) = parser.parse_args()
@@ -195,7 +224,7 @@ if __name__ == "__main__":
         source = prepareBucket(args[0])
         dest = prepareBucket(args[1])
         print "syncing from %s -> %s" % (source, dest)
-
+        diffBuckets(source, dest)
 
 
 
