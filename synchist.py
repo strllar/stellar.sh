@@ -7,32 +7,26 @@ from boto3.session import Session
 from oss.oss_api import *
 from oss import oss_xml_handler
 
-#class HistoryBucket(HistoryArchive):
-class HistoryBucket:
+class HistoryArchive:
     flat_components = ["bucket"]
     components = ["history",  "ledger",  "results",  "transactions"]
     headflag = ".well-known/stellar-history.json"
-    head = {}
+    head = None
 
-    def __init__(self, bucket, prefix):
-        self.bucket = bucket
-        self.prefix = prefix
+    def listEntries(self, component): pass
+    def getRawEntry(self, path): pass
 
-    def __str__(self):
-        return "%s %s %s" % (self.__class__.__name__, self.bucket, self.prefix)
-    
-    @staticmethod
-    def segmentURI(PRODUCT_PREFIX, path):
-        bucket = path
-        if bucket.startswith(PRODUCT_PREFIX):
-            bucket = bucket[len(PRODUCT_PREFIX):]
-        else:
-            return (None, path)
-        tmp_list = bucket.split("/")
-        if len(tmp_list) > 0:
-            bucket = tmp_list[0]
-        return bucket, path[(len(PRODUCT_PREFIX)+len(bucket)+len('/')):]
+    def getEntry(self, component, ledger): pass
+    def localizedEntry(self, component, ledger): pass
+    def putEntry(self, component, ledger): pass
+    def putLocalizedEntry(self, localpath): pass
 
+    def getLCL(self, update=False):
+        if (self.head is None or update):
+            head = json.loads(self.getRawEntry(self.headflag))
+            self.head = head            
+        return self.head['currentLedger']
+        
     def ledgerCheckpoints(self,lcl):
         return xrange(63, lcl+1, 64)
 
@@ -50,11 +44,33 @@ class HistoryBucket:
 
     def takeOverview(self):
         for component in self.components:
-            stored = set([self.decodeCheckPoint(component, one[0][len(self.prefix)+len('/'):]) for one in self.allPages(component, 1000)])
+            stored = set([self.decodeCheckPoint(component, one[0]) for one in self.listEntries(component)])
             print "missing %s: %s" % (component, sorted(list(set(self.ledgerCheckpoints(self.getLCL())).difference(stored))))
-        
 
+    
+class HistoryBucket(HistoryArchive):
+    def __init__(self, bucket, prefix):
+        self.bucket = bucket
+        self.prefix = prefix
 
+    def __str__(self):
+        return "%s @ %s/%s" % (self.__class__.__name__, self.bucket, self.prefix)
+    
+    @staticmethod
+    def segmentURI(PRODUCT_PREFIX, path):
+        bucket = path
+        if bucket.startswith(PRODUCT_PREFIX):
+            bucket = bucket[len(PRODUCT_PREFIX):]
+        else:
+            return (None, path)
+        tmp_list = bucket.split("/")
+        if len(tmp_list) > 0:
+            bucket = tmp_list[0]
+        return bucket, path[(len(PRODUCT_PREFIX)+len(bucket)+len('/')):]        
+
+    def listEntries(self, component):
+        return map(lambda x: (x[0][len(self.prefix)+len('/'):], x[1]), self.allPages(component, 1000))
+    
 # class LocalFolder(HistoryArchive):
 #     @staticmethod 
 #     def parseMatch(uri):
@@ -81,12 +97,6 @@ class S3Folder(HistoryBucket):
                          aws_secret_access_key=keysecret)
         self.s3 = sess.resource('s3')
         self.s3bucket = self.s3.Bucket(self.bucket)
-        
-    def getLCL(self):
-        res=self.s3.Object(self.bucket, self.prefix + '/' + self.headflag).get()
-        head = json.loads(res['Body'].read())
-        self.head = head
-        return self.head['currentLedger']
 
     def onePage(self, prefix, marker, pagesize):
         res = None
@@ -111,6 +121,10 @@ class S3Folder(HistoryBucket):
             for obj in page:
                 yield (obj.key, int(obj.size))
 
+    def getRawEntry(self, path):
+        res=self.s3.Object(self.bucket, self.prefix + '/' + path).get()
+        return res['Body'].read()
+
        
 class OSSFolder(HistoryBucket):
     def __init__(self, bulket, prefix):
@@ -131,12 +145,6 @@ class OSSFolder(HistoryBucket):
         keysecret = getpass.getpass('accessKeySecret of OSS: ')
         self.oss = OssAPI(ep, keyid, keysecret)
         
-    def getLCL(self):
-        res=self.oss.get_object(self.bucket, self.prefix + '/' + self.headflag)
-        head = json.loads(res.read())
-        self.head = head
-        return self.head['currentLedger']
-
     def onePage(self, prefix, marker, pagesize):
         res = None
         if (marker == None):
@@ -159,6 +167,10 @@ class OSSFolder(HistoryBucket):
             marker, page = self.onePage(self.prefix+'/'+subdir, marker, pagesize)
             for obj in page:
                 yield (obj.key, int(obj.size))
+
+    def getRawEntry(self, path):
+        res=self.oss.get_object(self.bucket, self.prefix + '/' + path)
+        return res.read()
 
 def prepareBucket(uri):
     parsed =  [x for x in [OSSFolder.parseMatch(uri), S3Folder.parseMatch(uri)] if x is not None]
