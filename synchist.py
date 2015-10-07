@@ -8,7 +8,15 @@ from boto3.session import Session
 from oss.oss_api import *
 from oss import oss_xml_handler
 
-
+import os, errno
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc: # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else: raise
+        
 class HistoryArchive:
     flat_components = ["bucket"]
     components = ["history",  "ledger",  "results",  "transactions"]
@@ -23,7 +31,7 @@ class HistoryArchive:
         subpath = self.resolveComponent(component, uniqid)
         localpath = os.path.join(topdir, subpath)
         localdir = os.path.dirname(localpath)
-        os.makedirs(localdir)
+        mkdir_p(localdir)
         f = file(localpath, "wb")
         f.write(self.getRawEntry(subpath))
         f.close()
