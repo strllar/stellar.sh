@@ -2,6 +2,7 @@ from optparse import OptionParser
 import getpass
 import json
 from tempfile import mkdtemp
+import sys
 
 from boto3.session import Session
 
@@ -263,10 +264,11 @@ if __name__ == "__main__":
             print "saved {}".format(res[0])
 
     else:
-        print "to check a history archive:"
-        print "<archive>"
-        print "to collect missing file for a corrupt history archive:"
-        print "<good archive> <corrupt archive>"
-
-
+        print "Usage 1: check a history archive:"
+        print "  {} <archive>".format(sys.argv[0])
+        print "Usage 2: fetch missing files"
+        print "  {} <reference archive> <corrupt archive>".format(sys.argv[0])
+        print "(both achives are operated in readonly mode, "
+        print " missing files will be saved in local filesystem, "
+        print " you need upload them to <corrupt archive> manually)"
 
