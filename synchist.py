@@ -35,7 +35,7 @@ class HistoryArchive:
         f = file(localpath, "wb")
         f.write(self.getRawEntry(subpath))
         f.close()
-        
+        return (subpath, localpath)
 
     # def putEntry(self, component, uniqid): pass
     # def putLocalizedEntry(self, localpath): pass
@@ -88,7 +88,7 @@ class HistoryBucket(HistoryArchive):
         self.prefix = prefix
 
     def __str__(self):
-        return "%s @ %s/%s" % (self.__class__.__name__, self.bucket, self.prefix)
+        return "%s(%s/%s)" % (self.__class__.__name__, self.bucket, self.prefix)
     
     @staticmethod
     def segmentURI(PRODUCT_PREFIX, path):
@@ -100,12 +100,13 @@ class HistoryBucket(HistoryArchive):
         tmp_list = bucket.split("/")
         if len(tmp_list) > 0:
             bucket = tmp_list[0]
-        return bucket, path[(len(PRODUCT_PREFIX)+len(bucket)+len('/')):]        
+        
+        return bucket, path[(len(PRODUCT_PREFIX)+len(bucket)+len('/')):].rstrip('/')
 
     def listEntries(self, component):
         return map(lambda x: (x[0][len(self.prefix)+len('/'):], x[1]), self.allPages(component, 1000))
     
-# class LocalFolder(HistoryArchive):
+class LocalFolder(HistoryArchive): pass
 #     @staticmethod 
 #     def parseMatch(uri):
 #         return None
@@ -125,9 +126,9 @@ class S3Folder(HistoryBucket):
             return S3Folder(bucket, prefix)
 
     def checkCredentials(self):
-        region = raw_input('Region for AWS S3: ')
-        keyid = raw_input('Access Key ID for AWS S3: ')
-        keysecret = getpass.getpass('Access Key Secret for AWS S3: ')
+        region = raw_input('Region for AWS S3(eg. us-east-1): ').strip()        
+        keyid = raw_input('Access Key ID for AWS S3: ').strip()
+        keysecret = getpass.getpass('Access Key Secret for AWS S3: ').strip()
         sess = Session(aws_access_key_id=keyid,
                          aws_secret_access_key=keysecret,
                        region_name=region)
@@ -176,9 +177,9 @@ class OSSFolder(HistoryBucket):
             return OSSFolder(bucket, prefix)
 
     def checkCredentials(self):
-        ep = raw_input('Endpoint of OSS(eg. oss-cn-beijing.aliyuncs.com): ')
-        keyid = raw_input('accessKeyId of OSS: ')
-        keysecret = getpass.getpass('accessKeySecret of OSS: ')
+        ep = raw_input('Endpoint of OSS(eg. oss-cn-beijing.aliyuncs.com): ').strip()
+        keyid = raw_input('accessKeyId of OSS: ').strip()
+        keysecret = getpass.getpass('accessKeySecret of OSS: ').strip()
         self.oss = OssAPI(ep, keyid, keysecret)
         
     def onePage(self, prefix, marker, pagesize):
@@ -229,7 +230,7 @@ def diffBuckets(src, dest):
             for x in srcset.difference(destset):
                 diffs.append((component, "%08x" % x))
         else:
-            raise "even combination of archives is not complete, get a new archive!"
+            raise "WARNING: even combination of archives is not complete, get a new archive!"
 
     for component in src.flat_components:
         srcset = set([src.decodeFlat(component, one[0]) for one in src.listEntries(component)])
@@ -238,11 +239,7 @@ def diffBuckets(src, dest):
         for y in srcset.difference(destset):
             diffs.append((component, y))
 
-    tempd = mkdtemp(prefix="stellar-history-diff-")
-    print "save files to {} ..".format(tempd)
-    for xyz in diffs:
-        src.saveEntryToFile(xyz[0], xyz[1], tempd)
-
+    return diffs
     
 if __name__ == "__main__":
     parser = OptionParser()
@@ -250,13 +247,26 @@ if __name__ == "__main__":
 
     if (len(args) == 1):
         one = prepareBucket(args[0])
+        print "Calc missing files in {}".format(one)
         one.takeOverview()
+        
     elif (len(args) == 2):
         source = prepareBucket(args[0])
         dest = prepareBucket(args[1])
-        print "syncing from %s -> %s" % (source, dest)
-        diffBuckets(source, dest)
+        print "Calc missing files in {1} from reference {0}".format(source, dest)
+        diffs = diffBuckets(source, dest)
 
+        tempd = mkdtemp(prefix="stellar-history-diff-")
+        print "Fetching files from {} to {} ..".format(source, tempd)
+        for xyz in diffs:        
+            res = source.saveEntryToFile(xyz[0], xyz[1], tempd)
+            print "saved {}".format(res[0])
+
+    else:
+        print "to check a history archive:"
+        print "<archive>"
+        print "to collect missing file for a corrupt history archive:"
+        print "<good archive> <corrupt archive>"
 
 
 
