@@ -1,11 +1,13 @@
 from optparse import OptionParser
 import getpass
 import json
+from tempfile import mkdtemp
 
 from boto3.session import Session
 
 from oss.oss_api import *
 from oss import oss_xml_handler
+
 
 class HistoryArchive:
     flat_components = ["bucket"]
@@ -16,7 +18,17 @@ class HistoryArchive:
     def listEntries(self, component): pass
     def getRawEntry(self, path): pass
 
-    # def localizedEntry(self, component, uniqid): pass
+
+    def saveEntryToFile(self, component, uniqid, topdir):
+        subpath = self.resolveComponent(component, uniqid)
+        localpath = os.path.join(topdir, subpath)
+        localdir = os.path.dirname(localpath)
+        os.makedirs(localdir)
+        f = file(localpath, "wb")
+        f.write(self.getRawEntry(subpath))
+        f.close()
+        
+
     # def putEntry(self, component, uniqid): pass
     # def putLocalizedEntry(self, localpath): pass
 
@@ -200,17 +212,28 @@ def prepareBucket(uri):
         return None
 
 def diffBuckets(src, dest):
+    diffs = []
     for component in src.components:
         srcset = set([src.decodeCheckPoint(component, one[0]) for one in src.listEntries(component)])
         destset = set([dest.decodeCheckPoint(component, one[0]) for one in dest.listEntries(component)])
         if (len(set(src.ledgerCheckpoints(dest.getLCL())).difference(srcset.union(destset))) == 0):
-            print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
+            #print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
+            for x in srcset.difference(destset):
+                diffs.append((component, "%08x" % x))
         else:
             raise "even combination of archives is not complete, get a new archive!"
+
     for component in src.flat_components:
         srcset = set([src.decodeFlat(component, one[0]) for one in src.listEntries(component)])
         destset = set([dest.decodeFlat(component, one[0]) for one in dest.listEntries(component)])
-        print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
+        #print "need copy %s @%s"  % (component, sorted(list(srcset.difference(destset))))
+        for y in srcset.difference(destset):
+            diffs.append((component, y))
+
+    tempd = mkdtemp(prefix="stellar-history-diff-")
+    print "save files to {} ..".format(tempd)
+    for xyz in diffs:
+        src.saveEntryToFile(xyz[0], xyz[1], tempd)
 
     
 if __name__ == "__main__":
