@@ -9,6 +9,7 @@ depends_on() {
 depends_on "curl"
 depends_on "jq"
 depends_on "parallel"
+depends_on "gzip"
 
 # Usage info
 show_help() {
@@ -20,9 +21,8 @@ Usages:
 EOF
 }
 
-former_checkpoints() {	
+former_checkpoints() {
 	local lcl=$(curl -s $1/.well-known/stellar-history.json|jq ".currentLedger")
-	echo 0
 	seq 63 64 `expr $lcl - 1`
 }
 
@@ -36,11 +36,27 @@ curl_download() {
 	local exte=${2##*" "}	
 	local lclhex=$(printf "%08x" $1)
 	local subpath=$(remotepath $lclhex $cate $exte)
-	if [[ ! -f $4$subpath || true ]];
+
+	local valid=true
+	case exte in
+		*gz)
+			if ! gzip -t $4/$subpath; then
+				valid=false
+			fi
+		;;
+		*json)
+			if ! jq ".currentLedger|empty" $4/$subpath; then
+				valid=false
+			fi
+			;;
+	esac
+		
+	if [ $valid = true ];
 	then
-		curl -s --create-dirs $3$subpath -o $4$subpath
+		echo "skip existing $4/$subpath"
 	else
-		echo "skip existing $4$subpath"
+		#todo enable $? back forward
+		echo "curl -s --create-dirs $3/$subpath -o $4/$subpath"
 	fi
 }
 
@@ -64,10 +80,10 @@ case $1 in
 		while getopts "s:d:" opt; do
 			case "$opt" in
 				s)
-					source_hist=$OPTARG
+					source_hist=${OPTARG%/}
 					;;
 				d)
-					dest_hist=$OPTARG
+					dest_hist=${OPTARG%/}
 					;;
 				*)
 					show_help >&2
@@ -83,7 +99,7 @@ case $1 in
 
 		case $1 in
 			"sync")
-				#download_checkpoints $source_hist $dest_hist 
+				download_checkpoints $source_hist $dest_hist
 				#TODO: autosync with advancing ledger
 			;;
 			@([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])\
@@ -100,7 +116,8 @@ case $1 in
 		echo "todo"
 		;;
 	"play")
-		former_checkpoints
+		shift
+		former_checkpoints $1
 		;;
 	*)
 		show_help
@@ -108,9 +125,3 @@ case $1 in
 		;;
 		
 esac
-
-
-
-#hints: to fix 0-sized files:
-##find archive/ -size 0|sed "s/.*-\([0-9a-z]*\).*/\1/" | xargs -I{} stellar_history_sync/stellar.sh hist -s http://history.stellar.org/prd/core-live/core_live_001 -d archive {}
-##
