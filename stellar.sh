@@ -21,22 +21,30 @@ Usages:
 EOF
 }
 
-former_checkpoints() {
-	local lcl=$(curl -s $1/.well-known/stellar-history.json|jq ".currentLedger")
-	seq 63 64 `expr $lcl - 1`
-}
 
 remotepath() {
-	#echo "/$2/$(sed 's/\(.\{2\}\)\(.\{2\}\)\(.\{2\}\).*/\1\/\2\/\3/' <<<$1)/$2-$1.$3"
-	echo /$2/${1:0:2}/${1:2:2}/${1:4:2}/$2-$1.$3
+	#echo "$2/$(sed 's/\(.\{2\}\)\(.\{2\}\)\(.\{2\}\).*/\1\/\2\/\3/' <<<$1)/$2-$1.$3"
+	echo $2/${1:0:2}/${1:2:2}/${1:4:2}/$2-$1.$3
 }
 
-curl_download() {
+former_checkpoints() {
+	echo "enumerating checkpints in range $1-$2 ledgers" >&2
+	seq $1 64 `expr $2 - 1`
+}
+
+all_checkpoints() {
+	former_checkpoints 63 $(curl -s $1/.well-known/stellar-history.json|jq ".currentLedger")
+}
+
+checkpoint_filename() {
 	local cate=${2%%" "*}
 	local exte=${2##*" "}	
 	local lclhex=$(printf "%08x" $1)
-	local subpath=$(remotepath $lclhex $cate $exte)
+	echo $(remotepath $lclhex $cate $exte)
+}
 
+curl_download() {
+    local subpath=$(checkpoint_filename $1 $2)
 	local valid=true
 	case exte in
 		*gz)
@@ -60,6 +68,32 @@ curl_download() {
 	fi
 }
 
+awk_checkpoint_filenames='
+BEGIN{lclhex="";}
+function remotepath(h,c,e) {
+  return gensub(/^(..)(..)(..).*/, ENVIRON["LOCAL_HISTORY"] "/" c "/\\1/\\2/\\3/" c "-" "\\0." e, "g", h);
+}
+{
+lclhex=sprintf("%08x",$1);
+print(remotepath(lclhex, "history", "json"));
+print(remotepath(lclhex, "ledger", "xdr.gz"));
+print(remotepath(lclhex, "transactions", "xdr.gz"));
+}'
+
+filtered_checkpoints() {	
+	export -f remotepath
+	export -f checkpoint_filename
+	export LOCAL_HISTORY=$2
+	lstfile=$(mktemp --suffix .lst stellar.sh_XXXXXX)
+	
+	#generating the full list, touch the missing file for following 'find'
+	all_checkpoints $1|awk "$awk_checkpoint_filenames"|tee $lstfile | parallel -m -u "mkdir -p {//} && touch {}"
+	#check out for the corrupted files
+	parallel --eta -m -a $lstfile -I%% 'find %% \( -size 0 -o \( -name *.gz \! -exec gzip -t {} \; \) -o \( -name *.json \! -exec sh -c "exec cat {}|jq \".currentLedger\" >/dev/null" \; \) \) -print'
+	
+	unlink $lstfile
+}
+
 download_subset() {
 	export -f remotepath
 	export -f curl_download
@@ -71,7 +105,7 @@ download_checkpoints() {
 	export -f remotepath
 	export -f curl_download
 	
-	parallel -j3000% -u --eta curl_download {1} {2} $1 $2 ::: $(former_checkpoints $1) ::: "history json" "ledger xdr.gz" "transactions xdr.gz"
+	all_checkpoints $1 | parallel -j3000% -u --eta curl_download {1} {2} $1 $2 :::: - ::: "history json" "ledger xdr.gz" "transactions xdr.gz"
 }
 
 case $1 in
@@ -117,6 +151,8 @@ case $1 in
 		;;
 	"play")
 		shift
+		filtered_checkpoints $1 $2
+		exit $?
 		former_checkpoints $1
 		;;
 	*)
