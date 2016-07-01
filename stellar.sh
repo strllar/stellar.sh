@@ -1,5 +1,7 @@
 #!/bin/bash
 
+#Copyleft 2016 by Strllar Lab (lab_AT_strllar_DOT_org)
+
 shopt -s extglob
 
 depends_on() {
@@ -14,64 +16,69 @@ depends_on "gzip"
 # Usage info
 show_help() {
 	cat <<EOF
+    Shell Script Utilities for Stellar Network
 Usages:
-  1)  ${0##*/} hist [options] ledger/txs/state/scp/bucket-??
-    -s SOURCE   source archive (eg. 'http://history.stellar.org/prd/core-live/core_live_001/')
-    -d DESTDIR  local dir to store archive (eg. 'archive')
+  1)  For history archive related
+
+   ${0##*/} archive [-s] [-t] -r <ref_hist> [local_hist]
+     
+    -s            keep local_hist autoSynced with polling
+    -t            Test mode. output filename without acturly fetching
+    -r <ref_hist> ref_hist is remote Reference archive (eg. 'http://history.stellar.org/prd/core-live/core_live_001/')
+                  predefined abbrevs supported: sdf1 sdf2 sdf3
+                  decimal or hex number of ledger is also supported. implicity enable test mode and disable autosync
+    [local_hist]  the path of local archive, if omited, monitor latest ledger number of ref_hist
+
+  2)  For account related (TODO)
+
+   ${0##*/} newacct
+
+   TBD
 EOF
 }
 
-
-remotepath() {
-	#echo "$2/$(sed 's/\(.\{2\}\)\(.\{2\}\)\(.\{2\}\).*/\1\/\2\/\3/' <<<$1)/$2-$1.$3"
-	echo $2/${1:0:2}/${1:2:2}/${1:4:2}/$2-$1.$3
-}
-
 former_checkpoints() {
-	echo "enumerating checkpints in range $1-$2 ledgers" >&2
-	seq $1 64 `expr $2 - 1`
-}
-
-all_checkpoints() {
-	former_checkpoints 63 $(curl -s $1/.well-known/stellar-history.json|jq ".currentLedger")
-}
-
-checkpoint_filename() {
-	local cate=${2%%" "*}
-	local exte=${2##*" "}	
-	local lclhex=$(printf "%08x" $1)
-	echo $(remotepath $lclhex $cate $exte)
+	echo "enumerating checkpoints before ledger $1..." >&2
+	seq ${2:-63} 64 $1
 }
 
 curl_download() {
-    local subpath=$(checkpoint_filename $1 $2)
-	local valid=true
-	case exte in
-		*gz)
-			if ! gzip -t $4/$subpath; then
-				valid=false
-			fi
-		;;
-		*json)
-			if ! jq ".currentLedger|empty" $4/$subpath; then
-				valid=false
-			fi
-			;;
-	esac
-		
-	if [ $valid = true ];
+	if [ "$4" = true ];
 	then
-		echo "skip existing $4/$subpath"
+		echo $1
 	else
-		#todo enable $? back forward
-		echo "curl -s --create-dirs $3/$subpath -o $4/$subpath"
+		curl -sf -m 30 --create-dirs $2/$1 -o $3/$1
 	fi
+}
+
+resolve_ref() {
+	local url=$1
+	case $1 in
+		sdf1)
+			url="http://history.stellar.org/prd/core-live/core_live_001/"
+			;;
+		sdf2)
+			url="http://history.stellar.org/prd/core-live/core_live_002/"
+			;;
+		sdf3)
+			url="http://history.stellar.org/prd/core-live/core_live_003/"
+			;;
+		#learn more from http://wiki.bash-hackers.org/syntax/pattern
+		0[[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]])
+			echo $((16#$1))
+			return 0
+			;;
+		@(+([[:digit:]]))) echo $1; return 0; ;;
+	esac
+    url=${url%/}
+
+    curl -sf $url/.well-known/stellar-history.json|jq ".currentLedger" && echo $url
 }
 
 awk_checkpoint_filenames='
 BEGIN{lclhex="";}
 function remotepath(h,c,e) {
-  return gensub(/^(..)(..)(..).*/, ENVIRON["LOCAL_HISTORY"] "/" c "/\\1/\\2/\\3/" c "-" "\\0." e, "g", h);
+  return gensub(/^(..)(..)(..).*/, c "/\\1/\\2/\\3/" c "-" "\\0." e, "g", h);
 }
 {
 lclhex=sprintf("%08x",$1);
@@ -81,43 +88,69 @@ print(remotepath(lclhex, "transactions", "xdr.gz"));
 }'
 
 filtered_checkpoints() {	
-	export -f remotepath
-	export -f checkpoint_filename
-	export LOCAL_HISTORY=$2
-	lstfile=$(mktemp --suffix .lst stellar.sh_XXXXXX)
+
+	lstfile=$(pwd)/$(mktemp --suffix .lst stellar.sh_XXXXXX)
 	
 	#generating the full list, touch the missing file for following 'find'
-	all_checkpoints $1|awk "$awk_checkpoint_filenames"|tee $lstfile | parallel -m -u "mkdir -p {//} && touch {}"
+	former_checkpoints $1|awk "$awk_checkpoint_filenames"|tee $lstfile | (cd $2; parallel -m -u "mkdir -p {//} && touch {}")
+
 	#check out for the corrupted files
-	parallel --eta -m -a $lstfile -I%% 'find %% \( -size 0 -o \( -name *.gz \! -exec gzip -t {} \; \) -o \( -name *.json \! -exec sh -c "exec cat {}|jq \".currentLedger\" >/dev/null" \; \) \) -print'
+	(cd $2; parallel -m -a $lstfile -I%% 'find %% \( -size 0 -o \( -name *.gz \! -exec gzip -t {} \; \) -o \( -name *.json \! -exec sh -c "exec cat {}|jq \".currentLedger\" >/dev/null" \; \) \) -print')
 	
 	unlink $lstfile
 }
 
-download_subset() {
-	export -f remotepath
-	export -f curl_download
-	
-	parallel  -u --eta curl_download $((16#$1)) {1} $source_hist $dest_hist ::: "history json" "ledger xdr.gz" "transactions xdr.gz"
-}
+do_archive() {
+	local local_dir=${local_hist%/}
+	read ledger_seq resolved_ref_url <<<$(resolve_ref $ref_hist)
 
-download_checkpoints() {
-	export -f remotepath
-	export -f curl_download
-	
-	all_checkpoints $1 | parallel -j3000% -u --eta curl_download {1} {2} $1 $2 :::: - ::: "history json" "ledger xdr.gz" "transactions xdr.gz"
+	if [ -z "$resolved_ref_url" ];
+	then
+		echo "entering test mode since ref_hist is number" >&2
+		test_mode=true;
+	fi
+
+	if [ -n "$local_dir" ];
+	then
+		export -f curl_download
+		filtered_checkpoints $ledger_seq $local_dir | parallel -j3000% -u --retries 1 --eta curl_download {} \"$resolved_ref_url\" \"$local_dir\" \"$test_mode\"
+	else
+		echo "got last checkpoint at ledger "$ledger_seq
+	fi
+
+	if [ "$autosync" = true ];
+	then
+		while read lcl _url_ <<<$(resolve_ref $ref_hist);
+		do			
+			if [ $lcl -gt $ledger_seq ];			   
+			then
+				echo "got a new checkpoint at ledger $lcl"
+				if [ -n "$local_dir" ];
+				then
+					former_checkpoints "$lcl" "$(($ledger_seq+64))"|awk "$awk_checkpoint_filenames"|parallel -u --eta curl_download {} \"$resolved_ref_url\" \"$local_dir\" \"$test_mode\"
+				fi
+				ledger_seq=$lcl
+				sleep $((5*63));
+			else				
+				sleep 5;
+			fi
+		done
+	fi
 }
 
 case $1 in
-	"hist")
+	"archive")
 		shift
-		while getopts "s:d:" opt; do
+		while getopts "str:" opt; do
 			case "$opt" in
 				s)
-					source_hist=${OPTARG%/}
+					autosync=true
 					;;
-				d)
-					dest_hist=${OPTARG%/}
+				t)
+					test_mode=true
+					;;
+				r)
+					ref_hist=$OPTARG
 					;;
 				*)
 					show_help >&2
@@ -127,32 +160,23 @@ case $1 in
 		done
 		shift "$((OPTIND-1))"
 		
-		if [[  x"${source_hist}" = x || x"${dest_hist}" = x ]];
-		then echo >&2 "source and dest must be specified"; exit 1;
+		if [ -z "$ref_hist" ];
+		then echo >&2 "reference archive must be specified"; exit 1;
 		fi
 
-		case $1 in
-			"sync")
-				download_checkpoints $source_hist $dest_hist
-				#TODO: autosync with advancing ledger
-			;;
-			@([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])?([0-9a-f])\
-?([0-9a-f]))
-			download_subset $1
-			;;
-			*)
-				echo >&2 "Unkown file type or format!"
-				exit 1;
-			esac
+		local_hist=$1
+
+		do_archive
 								
 		;;
-	"acct")
+	"newacct")
 		echo "todo"
 		;;
 	"play")
 		shift
-		filtered_checkpoints $1 $2
+		resolve_ref $1
 		exit $?
+		filtered_checkpoints $1 $2
 		former_checkpoints $1
 		;;
 	*)
